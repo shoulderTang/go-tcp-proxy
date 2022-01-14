@@ -1,13 +1,14 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"regexp"
 	"strings"
+
+	tls "github.com/piligo/gmssl"
 
 	slog "github.com/cihub/seelog"
 	proxy "github.com/shoulderTang/go-tcp-proxy"
@@ -29,7 +30,7 @@ var (
 	nagles      = flag.Bool("n", false, "disable nagles algorithm")
 	hex         = flag.Bool("h", false, "output hex")
 	colors      = flag.Bool("c", false, "output ansi colors")
-	unwrapTLS   = flag.Bool("unwrap-tls", false, "remote connection with TLS exposed unencrypted locally")
+	unwrapTLS   = flag.Bool("unwrap-tls", true, "remote connection with TLS exposed unencrypted locally")
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
 )
@@ -78,7 +79,7 @@ func main() {
 
 	for {
 		conn, err := listener.Accept()
-		TCPconn := conn.(*net.TCPConn)
+		//TCPconn := conn.(*net.TCPConn)
 		if err != nil {
 			logger.Warn("Failed to accept connection '%s'", err)
 			continue
@@ -88,9 +89,9 @@ func main() {
 		var p *proxy.Proxy
 		if *unwrapTLS {
 			logger.Info("Unwrapping TLS")
-			p = proxy.NewTLSUnwrapped(TCPconn, laddr, raddr, *remoteAddr)
+			p = proxy.NewTLSUnwrapped(conn, laddr, raddr, *remoteAddr)
 		} else {
-			p = proxy.New(TCPconn, laddr, raddr)
+			p = proxy.New(conn, laddr, raddr)
 		}
 
 		p.Matcher = matcher
