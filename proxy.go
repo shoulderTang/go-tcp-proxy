@@ -1,9 +1,11 @@
 package proxy
 
 import (
-	"crypto/tls"
 	"io"
 	"net"
+
+	slog "github.com/cihub/seelog"
+	tls "github.com/piligo/gmssl"
 )
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
@@ -60,7 +62,15 @@ func (p *Proxy) Start() {
 	var err error
 	//connect to remote
 	if p.tlsUnwrapp {
-		p.rconn, err = tls.Dial("tcp", p.tlsAddress, nil)
+		conf := &tls.Config{
+			InsecureSkipVerify: true, //为true 接收任何服务端的证书不做校验
+		}
+		p.rconn, err = tls.Dial("tcp", p.tlsAddress, conf)
+		if err != nil {
+			slog.Info("Dial ERR->", err)
+			return
+		}
+		slog.Info("Client: gmtsl connect remote addr sucess->", p.tlsAddress)
 	} else {
 		p.rconn, err = net.DialTCP("tcp", nil, p.raddr)
 	}
