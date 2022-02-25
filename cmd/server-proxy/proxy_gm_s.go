@@ -8,9 +8,13 @@ import (
 	"regexp"
 	"strings"
 
-	tls "github.com/piligo/gmssl"
+	//tls "github.com/piligo/gmssl"
+	tls "crypto/tls"
+
+	tlsgm "github.com/piligo/gmssl"
 
 	slog "github.com/cihub/seelog"
+
 	proxy "github.com/shoulderTang/go-tcp-proxy"
 )
 
@@ -30,7 +34,8 @@ var (
 	nagles      = flag.Bool("n", false, "disable nagles algorithm")
 	hex         = flag.Bool("h", false, "output hex")
 	colors      = flag.Bool("c", false, "output ansi colors")
-	unwrapTLS   = flag.Bool("unwrap-tls", false, "remote connection with TLS exposed unencrypted locally")
+	isTLS       = flag.Bool("tls", false, "remote connection with TLS exposed unencrypted locally")
+	isGmTLS     = flag.Bool("gm", false, "GM-TLS")
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
 )
@@ -58,16 +63,35 @@ func main() {
 
 	//change to tls listen
 	slog.Info(" server start ")
-	cers, err := loadCerts(*pemdir)
-	if err != nil {
-		slog.Error("server_echo : loadCerts err->", err)
-		return
-	}
-	config := &tls.Config{Certificates: cers}
-	listener, err := tls.Listen("tcp", *localAddr, config)
-	if err != nil {
-		logger.Warn("Failed to open local port to listen: %s", err)
-		os.Exit(1)
+	var listener net.Listener
+	if *isGmTLS {
+		cers, err := loadGmCerts(*pemdir)
+		if err != nil {
+			slog.Error("server_echo : loadCerts err->", err)
+			return
+		}
+
+		config := &tlsgm.Config{Certificates: cers}
+		listener, err = tlsgm.Listen("tcp", *localAddr, config)
+		if err != nil {
+			logger.Warn("Failed to open local port to listen: %s", err)
+			os.Exit(1)
+		}
+	} else {
+		cers, err := loadCerts(*pemdir)
+		if err != nil {
+			fmt.Println("server_echo : loadCerts err->", err)
+			slog.Error("server_echo : loadCerts err->", err)
+			return
+		}
+
+		config := &tls.Config{Certificates: cers}
+		listener, err = tls.Listen("tcp", *localAddr, config)
+		if err != nil {
+			fmt.Println("Failed to open local port to listen: %s", err)
+			logger.Warn("Failed to open local port to listen: %s", err)
+			os.Exit(1)
+		}
 	}
 
 	matcher := createMatcher(*match)
@@ -81,15 +105,17 @@ func main() {
 		conn, err := listener.Accept()
 		//TCPconn := conn.(*net.TCPConn)
 		if err != nil {
+			fmt.Println("Failed to accept connection '%s'", err)
 			logger.Warn("Failed to accept connection '%s'", err)
 			continue
 		}
 		connid++
 
 		var p *proxy.Proxy
-		if *unwrapTLS {
+		if *isTLS {
+			fmt.Println("Unwrapping TLS")
 			logger.Info("Unwrapping TLS")
-			p = proxy.NewTLSUnwrapped(conn, laddr, raddr, *remoteAddr)
+			p = proxy.NewTLS(conn, laddr, raddr, *remoteAddr, *isGmTLS)
 		} else {
 			p = proxy.New(conn, laddr, raddr)
 		}
@@ -155,14 +181,32 @@ func createReplacer(replace string) func([]byte) []byte {
 	}
 }
 
-func loadCerts(pemdir string) ([]tls.Certificate, error) {
+func loadGmCerts(pemdir string) ([]tlsgm.Certificate, error) {
 	cerfiles := []string{"SS", "CA", "SE"}
-	certs := make([]tls.Certificate, 0)
+	certs := make([]tlsgm.Certificate, 0)
 	for _, n := range cerfiles {
 		certname := fmt.Sprintf("%s/%s.cert.pem", pemdir, n)
 		certkey := fmt.Sprintf("%s/%s.key.pem", pemdir, n)
+		cer, err := tlsgm.LoadX509KeyPair(certname, certkey)
+		if err != nil {
+			fmt.Println("loadGmCerts tlsgm.LoadX509KeyPair err->", err, " name=", certname, " key=", certkey)
+			slog.Error("tlsgm.LoadX509KeyPair err->", err, " name=", certname, " key=", certkey)
+			return nil, err
+		}
+		certs = append(certs, cer)
+	}
+	return certs, nil
+}
+
+func loadCerts(pemdir string) ([]tls.Certificate, error) {
+	cerfiles := []string{"server"}
+	certs := make([]tls.Certificate, 0)
+	for _, n := range cerfiles {
+		certname := fmt.Sprintf("%s/%s.pem", pemdir, n)
+		certkey := fmt.Sprintf("%s/%s.key", pemdir, n)
 		cer, err := tls.LoadX509KeyPair(certname, certkey)
 		if err != nil {
+			fmt.Println("tls.LoadX509KeyPair err->", err, " name=", certname, " key=", certkey)
 			slog.Error("tls.LoadX509KeyPair err->", err, " name=", certname, " key=", certkey)
 			return nil, err
 		}

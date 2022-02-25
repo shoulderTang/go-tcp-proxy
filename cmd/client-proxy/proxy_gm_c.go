@@ -24,7 +24,8 @@ var (
 	nagles      = flag.Bool("n", false, "disable nagles algorithm")
 	hex         = flag.Bool("h", false, "output hex")
 	colors      = flag.Bool("c", false, "output ansi colors")
-	unwrapTLS   = flag.Bool("unwrap-tls", true, "remote connection with TLS exposed unencrypted locally")
+	isTLS       = flag.Bool("tls", true, "remote connection with TLS exposed unencrypted locally")
+	isGmTLS     = flag.Bool("gm", false, "remote connection with GM-TLS exposed unencrypted locally")
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
 )
@@ -71,9 +72,9 @@ func main() {
 		connid++
 
 		var p *proxy.Proxy
-		if *unwrapTLS {
-			logger.Info("Unwrapping TLS")
-			p = proxy.NewTLSUnwrapped(conn, laddr, raddr, *remoteAddr)
+		if *isTLS {
+			logger.Info("TLS")
+			p = proxy.NewTLS(conn, laddr, raddr, *remoteAddr, *isGmTLS)
 		} else {
 			p = proxy.New(conn, laddr, raddr)
 		}

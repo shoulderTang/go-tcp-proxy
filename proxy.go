@@ -1,11 +1,14 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"net"
 
+	tls "crypto/tls"
+
 	slog "github.com/cihub/seelog"
-	tls "github.com/piligo/gmssl"
+	tlsgm "github.com/piligo/gmssl"
 )
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
@@ -17,6 +20,7 @@ type Proxy struct {
 	erred         bool
 	errsig        chan bool
 	tlsUnwrapp    bool
+	isGmtls       bool
 	tlsAddress    string
 
 	Matcher  func([]byte)
@@ -44,9 +48,10 @@ func New(lconn io.ReadWriteCloser, laddr, raddr *net.TCPAddr) *Proxy {
 // NewTLSUnwrapped - Create a new Proxy instance with a remote TLS server for
 // which we want to unwrap the TLS to be able to connect without encryption
 // locally
-func NewTLSUnwrapped(lconn io.ReadWriteCloser, laddr, raddr *net.TCPAddr, addr string) *Proxy {
+func NewTLS(lconn io.ReadWriteCloser, laddr, raddr *net.TCPAddr, addr string, isGm bool) *Proxy {
 	p := New(lconn, laddr, raddr)
 	p.tlsUnwrapp = true
+	p.isGmtls = isGm
 	p.tlsAddress = addr
 	return p
 }
@@ -62,19 +67,34 @@ func (p *Proxy) Start() {
 	var err error
 	//connect to remote
 	if p.tlsUnwrapp {
-		conf := &tls.Config{
-			InsecureSkipVerify: true, //为true 接收任何服务端的证书不做校验
+		if p.isGmtls {
+			conf := &tlsgm.Config{
+				InsecureSkipVerify: true, //为true 接收任何服务端的证书不做校验
+			}
+			p.rconn, err = tlsgm.Dial("tcp", p.tlsAddress, conf)
+			if err != nil {
+				fmt.Println("Dial ERR->", err)
+				slog.Info("Dial ERR->", err)
+				return
+			}
+			slog.Info("Client: gmtsl connect remote addr sucess->", p.tlsAddress)
+		} else {
+			conf := &tls.Config{
+				InsecureSkipVerify: true, //为true 接收任何服务端的证书不做校验
+			}
+			p.rconn, err = tls.Dial("tcp", p.tlsAddress, conf)
+			if err != nil {
+				fmt.Println("Dial ERR->", err)
+				slog.Info("Dial ERR->", err)
+				return
+			}
+			slog.Info("Client: tsl connect remote addr sucess->", p.tlsAddress)
 		}
-		p.rconn, err = tls.Dial("tcp", p.tlsAddress, conf)
-		if err != nil {
-			slog.Info("Dial ERR->", err)
-			return
-		}
-		slog.Info("Client: gmtsl connect remote addr sucess->", p.tlsAddress)
 	} else {
 		p.rconn, err = net.DialTCP("tcp", nil, p.raddr)
 	}
 	if err != nil {
+		fmt.Println("Remote connection failed: %s", err)
 		p.Log.Warn("Remote connection failed: %s", err)
 		return
 	}
@@ -92,10 +112,14 @@ func (p *Proxy) Start() {
 
 	//display both ends
 	p.Log.Info("Opened %s >>> %s", p.laddr.String(), p.raddr.String())
+	fmt.Println("Opened %s >>> %s", p.laddr.String(), p.raddr.String())
 
 	//bidirectional copy
-	go p.pipe(p.lconn, p.rconn)
-	go p.pipe(p.rconn, p.lconn)
+	//go p.pipe(p.lconn, p.rconn)
+	//go p.pipe(p.rconn, p.lconn)
+
+	p.Pipe(p.lconn, p.rconn)
+	p.Pipe(p.rconn, p.lconn)
 
 	//wait for close...
 	<-p.errsig
@@ -113,6 +137,7 @@ func (p *Proxy) err(s string, err error) {
 	p.erred = true
 }
 
+/*
 func (p *Proxy) pipe(src, dst io.ReadWriter) {
 	islocal := src == p.lconn
 
@@ -164,6 +189,54 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 			p.sentBytes += uint64(n)
 		} else {
 			p.receivedBytes += uint64(n)
+		}
+	}
+}
+*/
+
+func (p *Proxy) chanFromConn(conn io.ReadWriter) chan []byte {
+	c := make(chan []byte)
+
+	go func() {
+		b := make([]byte, 0xffff)
+
+		for {
+			n, err := conn.Read(b)
+			if n > 0 {
+				res := make([]byte, n)
+				// Copy the buffer so it doesn't get changed while read by the recipient.
+				copy(res, b[:n])
+				c <- res
+			}
+			if err != nil {
+				c <- nil
+				p.err("Read failed '%s'\n", err)
+				break
+			}
+		}
+	}()
+
+	return c
+}
+
+func (p *Proxy) Pipe(conn1, conn2 io.ReadWriter) {
+	chan1 := p.chanFromConn(conn1)
+	chan2 := p.chanFromConn(conn2)
+
+	for {
+		select {
+		case b1 := <-chan1:
+			if b1 == nil {
+				return
+			} else {
+				conn2.Write(b1)
+			}
+		case b2 := <-chan2:
+			if b2 == nil {
+				return
+			} else {
+				conn1.Write(b2)
+			}
 		}
 	}
 }
